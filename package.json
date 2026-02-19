@@ -1,0 +1,21 @@
+{
+  "name": "modmail-bot",
+  "version": "1.0.0",
+  "description": "A professional ModMail bot for Discord.",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node .",
+    "deploy": "node deploy-commands.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@napi-rs/canvas": "^0.1.89",
+    "debug": "^4.4.3",
+    "discord-html-transcripts": "^3.2.0",
+    "discord.js": "^14.15.3",
+    "dotenv": "^17.2.3",
+    "ms": "^2.1.3"
+  }
+}
