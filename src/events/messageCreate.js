@@ -166,10 +166,29 @@ module.exports = {
             if (['block', 'unblock', 'restpoints'].includes(command)) {
                 if (message.channel.id !== adminChannelId) return;
                 if (!isHighAdmin) return;
-                const targetUser = message.mentions.users.first();
-                if (!targetUser) return message.channel.send('يرجى منشن العضو.');
+
+                // دعم المنشن أو الـ ID مباشرة
+                const mentionedUser = message.mentions.users.first();
+                let targetUser = mentionedUser;
+                let argsOffset = 0; // لتحديد بداية الـ args بعد الـ ID أو المنشن
+
+                if (!targetUser) {
+                    // البحث عن ID في الـ args (أول عنصر يكون أرقاماً فقط)
+                    const possibleId = args[0];
+                    if (possibleId && /^\d{17,20}$/.test(possibleId)) {
+                        try {
+                            targetUser = await client.users.fetch(possibleId);
+                            argsOffset = 1; // تخطي الـ ID في args
+                        } catch {
+                            return message.channel.send(' لم يتم العثور على مستخدم بهذا الـ ID.');
+                        }
+                    } else {
+                        return message.channel.send('يرجى منشن العضو أو كتابة الـ ID الخاص به.');
+                    }
+                }
+
                 if (command === 'restpoints') {
-                    const reason = args.slice(1).join(' ') || 'لا يوجد سبب';
+                    const reason = args.slice(argsOffset + 1).join(' ') || 'لا يوجد سبب';
                     db.ratings[targetUser.id] = { score: 0, acceptedTickets: 0, details: { excellent: 0, verygood: 0, good: 0, neutral: 0, bad: 0 } };
                     fs.writeFileSync(dbPath, JSON.stringify(db, null, 2));
                     const logEmbed = new EmbedBuilder().setColor(0xED4245).setTitle('🔄 تصفير نقاط').addFields({ name: 'المشرف', value: `${message.author.tag}`, inline: true }, { name: 'العضو', value: `${targetUser.tag}`, inline: true }, { name: 'السبب', value: reason, inline: false }).setTimestamp();
@@ -177,14 +196,14 @@ module.exports = {
                     return message.channel.send(` تم تصفير نقاط ${targetUser} بنجاح.`);
                 }
                 if (command === 'block') {
-                    let durationStr = args[1];
-                    let reason = args.slice(2).join(' ') || 'لا يوجد سبب';
+                    let durationStr = args[argsOffset];
+                    let reason = args.slice(argsOffset + 1).join(' ') || 'لا يوجد سبب';
                     let expires = 'permanent';
                     if (durationStr && /^\d+[mhd w]$/.test(durationStr)) {
                         const msTime = ms(durationStr);
                         if (msTime) expires = Date.now() + msTime;
                     } else if (durationStr) {
-                        reason = args.slice(1).join(' ') || 'لا يوجد سبب';
+                        reason = args.slice(argsOffset).join(' ') || 'لا يوجد سبب';
                     }
                     db.blocks[targetUser.id] = { expires, reason, by: message.author.id };
                     fs.writeFileSync(dbPath, JSON.stringify(db, null, 2));
