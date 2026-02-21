@@ -247,7 +247,7 @@ module.exports = {
             const [cmd, ...args] = message.content.slice(1).trim().split(/ +/);
             const command = cmd.toLowerCase();
             
-            if (['a', 'fdr', 'dr', 'fr', 'r', 'cr', 'er', 'tra'].includes(command)) {
+            if (['a', 'fdr', 'dr', 'fr', 'r', 'cr', 'er', 'tra','name'].includes(command)) {
                 
                 if (command === 'er') {
                     await message.channel.send({ embeds: [new EmbedBuilder().setColor(0xED4245).setDescription('🔒 يتم إغلاق التذكرة الآن...')] });
@@ -374,7 +374,13 @@ module.exports = {
                     const selectMenu = new StringSelectMenuBuilder().setCustomId('transfer_select').setPlaceholder('اختر القسم الجديد للنقل إليه').addOptions(options);
                     const row = new ActionRowBuilder().addComponents(selectMenu);
                     await message.channel.send({ embeds: [new EmbedBuilder().setColor(0x5865F2).setTitle(' نقل التذكرة').setDescription('يرجى اختيار القسم الجديد:')], components: [row] });
-                    return;
+                    if (command === 'name'){
+                        const newName = args.join(' ');
+                        if (!newName) return message.channel.send(' يرجى كتابة الاسم الجديد بعد الأمر.');
+                        await message.channel.setName(newName).catch(() => {});
+                        await message.channel.send(` تم تغيير اسم التذكرة إلى: ${newName}`);
+                        return;
+                    }
                 }
             }
         }
