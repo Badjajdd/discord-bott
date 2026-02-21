@@ -166,29 +166,10 @@ module.exports = {
             if (['block', 'unblock', 'restpoints'].includes(command)) {
                 if (message.channel.id !== adminChannelId) return;
                 if (!isHighAdmin) return;
-
-                // دعم المنشن أو الـ ID مباشرة
-                const mentionedUser = message.mentions.users.first();
-                let targetUser = mentionedUser;
-                let argsOffset = 0; // لتحديد بداية الـ args بعد الـ ID أو المنشن
-
-                if (!targetUser) {
-                    // البحث عن ID في الـ args (أول عنصر يكون أرقاماً فقط)
-                    const possibleId = args[0];
-                    if (possibleId && /^\d{17,20}$/.test(possibleId)) {
-                        try {
-                            targetUser = await client.users.fetch(possibleId);
-                            argsOffset = 1; // تخطي الـ ID في args
-                        } catch {
-                            return message.channel.send(' لم يتم العثور على مستخدم بهذا الـ ID.');
-                        }
-                    } else {
-                        return message.channel.send('يرجى منشن العضو أو كتابة الـ ID الخاص به.');
-                    }
-                }
-
+                const targetUser = message.mentions.users.first();
+                if (!targetUser) return message.channel.send('يرجى منشن العضو.');
                 if (command === 'restpoints') {
-                    const reason = args.slice(argsOffset + 1).join(' ') || 'لا يوجد سبب';
+                    const reason = args.slice(1).join(' ') || 'لا يوجد سبب';
                     db.ratings[targetUser.id] = { score: 0, acceptedTickets: 0, details: { excellent: 0, verygood: 0, good: 0, neutral: 0, bad: 0 } };
                     fs.writeFileSync(dbPath, JSON.stringify(db, null, 2));
                     const logEmbed = new EmbedBuilder().setColor(0xED4245).setTitle('🔄 تصفير نقاط').addFields({ name: 'المشرف', value: `${message.author.tag}`, inline: true }, { name: 'العضو', value: `${targetUser.tag}`, inline: true }, { name: 'السبب', value: reason, inline: false }).setTimestamp();
@@ -196,14 +177,14 @@ module.exports = {
                     return message.channel.send(` تم تصفير نقاط ${targetUser} بنجاح.`);
                 }
                 if (command === 'block') {
-                    let durationStr = args[argsOffset];
-                    let reason = args.slice(argsOffset + 1).join(' ') || 'لا يوجد سبب';
+                    let durationStr = args[1];
+                    let reason = args.slice(2).join(' ') || 'لا يوجد سبب';
                     let expires = 'permanent';
                     if (durationStr && /^\d+[mhd w]$/.test(durationStr)) {
                         const msTime = ms(durationStr);
                         if (msTime) expires = Date.now() + msTime;
                     } else if (durationStr) {
-                        reason = args.slice(argsOffset).join(' ') || 'لا يوجد سبب';
+                        reason = args.slice(1).join(' ') || 'لا يوجد سبب';
                     }
                     db.blocks[targetUser.id] = { expires, reason, by: message.author.id };
                     fs.writeFileSync(dbPath, JSON.stringify(db, null, 2));
@@ -227,6 +208,18 @@ module.exports = {
         const user = await client.users.fetch(ownerId).catch(() => null);
         const isHighAdmin = highAdminRoleIds.some(roleId => message.member.roles.cache.has(roleId));
 
+        // --- إلغاء الإغلاق التلقائي عند رد صاحب التذكرة ---
+        if (message.author.id === ownerId && ticketCloseTimers.has(message.channel.id)) {
+            clearTimeout(ticketCloseTimers.get(message.channel.id));
+            ticketCloseTimers.delete(message.channel.id);
+            
+            const cancelEmbed = new EmbedBuilder()
+                .setColor(0x57F287)
+                .setDescription('✅ تم إلغاء إغلاق التذكرة التلقائي بسبب رد صاحب التذكرة.');
+            await message.channel.send({ embeds: [cancelEmbed] });
+            if (user) await user.send('✅ تم إلغاء إغلاق تذكرتك التلقائي بنجاح.').catch(() => {});
+        }
+
         if (!ticket.verified && (adminRoleIds || []).some(roleId => message.member.roles.cache.has(roleId))) {
             if (message.content.trim() === ticket.captchaCode) {
                 ticket.verified = true;
@@ -236,7 +229,11 @@ module.exports = {
                 }
                 db.ratings[message.author.id].acceptedTickets++;
                 fs.writeFileSync(dbPath, JSON.stringify(db, null, 2));
-                await message.channel.send({ embeds: [new EmbedBuilder().setColor(0x57F287).setDescription(` **تم استلام التذكرة بنجاح من قبل ${message.author}!**`)] });
+                
+                const claimEmbed = new EmbedBuilder()
+                    .setColor(0x57F287)
+                    .setDescription(`✅ تم استلام التذكرة من قبل ${message.author}`);
+                await message.channel.send({ embeds: [claimEmbed] });
                 if (user) await user.send({ embeds: [new EmbedBuilder().setColor(0x57F287).setDescription(` تم استلام التذكرة الخاصة بك من قبل **${message.member.displayName}**`)] }).catch(() => {});
                 try { await message.delete(); } catch(e) {}
                 return;
@@ -247,7 +244,7 @@ module.exports = {
             const [cmd, ...args] = message.content.slice(1).trim().split(/ +/);
             const command = cmd.toLowerCase();
             
-            if (['a', 'fdr', 'dr', 'fr', 'r', 'cr', 'er', 'tra','name'].includes(command)) {
+            if (['a', 'fdr', 'dr', 'fr', 'r', 'cr', 'er', 'tra', 'name'].includes(command)) {
                 
                 if (command === 'er') {
                     await message.channel.send({ embeds: [new EmbedBuilder().setColor(0xED4245).setDescription('🔒 يتم إغلاق التذكرة الآن...')] });
@@ -328,7 +325,6 @@ module.exports = {
                     if (!txt && message.attachments.size === 0) return;
                     const iconString = getMemberIcon(message.member);
                     const files = message.attachments.map(a => a.url);
-                    // التنسيق المطلوب: أيقونة الاسم: الرسالة
                     await message.channel.send({ content: `### ${iconString}**${message.member.displayName}** : ${txt}`, files: files });
                     if (user) await user.send({ content: `### ${iconString}**${message.member.displayName}** : ${txt}`, files: files }).catch(() => {});
                     try { await message.delete(); } catch(e) {}
@@ -357,11 +353,17 @@ module.exports = {
                         fs.writeFileSync(dbPath, JSON.stringify(db, null, 2));
                     };
                     if (!time) {
-                        await message.channel.send('سيتم اغلاق التذكرة خلال 5 ثوأني');
+                        await message.channel.send('سيتم اغلاق التذكرة خلال 5 ثواني');
                         setTimeout(closeTicket, 5000);
                     } else {
                         const msTime = ms(time); if (isNaN(msTime)) return message.channel.send(' وقت غير صالح.');
                         await message.channel.send(`سيتم اغلاق التذكرة تلقائي بعد ${time}`);
+                        
+                        // تنبيه المستخدم في الخاص
+                        if (user) {
+                            await user.send(`تم تحويل تذكرتك لوضع الاهمال في حال عدم الرد سيتم اغلاق تذكرتك بعد (${time})`).catch(() => {});
+                        }
+                        
                         const timer = setTimeout(closeTicket, msTime);
                         ticketCloseTimers.set(message.channel.id, timer);
                     }
@@ -374,13 +376,34 @@ module.exports = {
                     const selectMenu = new StringSelectMenuBuilder().setCustomId('transfer_select').setPlaceholder('اختر القسم الجديد للنقل إليه').addOptions(options);
                     const row = new ActionRowBuilder().addComponents(selectMenu);
                     await message.channel.send({ embeds: [new EmbedBuilder().setColor(0x5865F2).setTitle(' نقل التذكرة').setDescription('يرجى اختيار القسم الجديد:')], components: [row] });
-                    if (command === 'name'){
-                        const newName = args.join(' ');
-                        if (!newName) return message.channel.send(' يرجى كتابة الاسم الجديد بعد الأمر.');
-                        await message.channel.setName(newName).catch(() => {});
-                        await message.channel.send(` تم تغيير اسم التذكرة إلى: ${newName}`);
-                        return;
+                    return;
+                }
+
+                if (command === 'name') {
+                    const newName = args.join('-');
+                    if (!newName) return message.channel.send(' يرجى كتابة الاسم الجديد بعد الأمر. مثال: `-name ticket-new`');
+                    
+                    try {
+                        const oldName = message.channel.name;
+                        await message.channel.setName(newName);
+                        await message.channel.send('تم تغير اسم التذكرة الى ' + newName);
+                        
+                        const logEmbed = new EmbedBuilder()
+                            .setColor(0x5865F2)
+                            .setTitle('📝 تغيير اسم تذكرة')
+                            .addFields(
+                                { name: 'المشرف', value: `${message.author.tag}`, inline: true },
+                                { name: 'الاسم القديم', value: `\`${oldName}\``, inline: true },
+                                { name: 'الاسم الجديد', value: `\`${newName}\``, inline: true },
+                                { name: 'رقم التذكرة', value: `#${ticket.ticketId}`, inline: true }
+                            )
+                            .setTimestamp();
+                        await sendLog(logEmbed);
+                    } catch (error) {
+                        console.error('Error renaming channel:', error);
+                        await message.channel.send('❌ حدث خطأ أثناء محاولة تغيير اسم القناة. تأكد من أن البوت لديه الصلاحيات الكافية.');
                     }
+                    return;
                 }
             }
         }
