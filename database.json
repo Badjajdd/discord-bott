@@ -1,14 +1,6 @@
 {
   "openTickets": {
-    "1014396459438850078": {
-      "channelId": "1473856545249820754",
-      "ticketId": 7,
-      "department": "تقديم فريق الدعم الفني",
-      "problem": "fwqfqwf",
-      "openedAt": 1771465183977,
-      "claimedBy": "1014396459438850078",
-      "captchaCode": "2326",
-      "verified": true
+   
     }
   },
   "ticketCounter": 7,
