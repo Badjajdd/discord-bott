@@ -273,8 +273,7 @@ module.exports = {
                     if (!isHighAdmin) return message.channel.send(' ليس لديك صلاحية لاستخدام هذا الأمر.').then(m => setTimeout(() => m.delete(), 3000));
                     const txt = args.join(' ');
                     if (!txt) return;
-                    const iconString = getMemberIcon(message.member);
-                    const content = `### ${iconString}**High Management** : ${txt}`;
+                    const content = `### $**High Management** : ${txt}`;
                     await message.channel.send({ content });
                     if (user) await user.send({ content }).catch(() => {});
                     try { await message.delete(); } catch(e) {}
