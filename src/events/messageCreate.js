@@ -1,30 +1,21 @@
-const { EmbedBuilder, ActionRowBuilder, StringSelectMenuBuilder, AttachmentBuilder } = require('discord.js');
+const { EmbedBuilder, ActionRowBuilder, StringSelectMenuBuilder, AttachmentBuilder, ChannelType, PermissionFlagsBits, ModalBuilder, TextInputBuilder, TextInputStyle, ButtonBuilder, ButtonStyle } = require('discord.js');
 const { generateCaptcha } = require('../utils/captcha');
-const transcript = require('discord-html-transcripts');
 const fs = require('node:fs');
 const path = require('node:path');
-const ms = require('ms');
-
-const ticketCloseTimers = new Map();
 
 module.exports = {
-    name: 'messageCreate',
-    async execute(message, client) {
-        if (message.author.bot) return;
-
-        // إعادة تحميل الإعدادات لضمان قراءة التغييرات الديناميكية
+    name: 'interactionCreate',
+    async execute(interaction, client) {
         const configPath = path.join(__dirname, '..', '..', 'config.json');
-        let config;
+        const dbPath = path.join(__dirname, '..', '..', 'database.json');
+        
+        let config = {};
         try {
             config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
         } catch (e) {
-            console.error('Failed to read config.json:', e);
-            return;
+            console.error('فشل قراءة ملف config.json:', e);
         }
 
-        const { adminRoleIds, logChannelId, statsChannelId, adminChannelId, highAdminRoleIds, roleIcons } = config;
-
-        const dbPath = path.join(__dirname, '..', '..', 'database.json');
         let db;
         try {
             const data = fs.readFileSync(dbPath, 'utf8');
@@ -35,376 +26,333 @@ module.exports = {
 
         const categories = db.categories || {};
 
-        const sendLog = async (embed, files = []) => {
-            const logChannel = await client.channels.fetch(logChannelId).catch(() => null);
-            if (logChannel) await logChannel.send({ embeds: [embed], files: files });
-        };
-
-        // دالة جلب الأيقونة - نسخة مبسطة ومضمونة
-        const getMemberIcon = (member) => {
-            if (!roleIcons) return "";
-            
-            // جلب مصفوفة من معرفات رتب العضو
-            const memberRoleIds = Array.from(member.roles.cache.keys());
-            
-            // ترتيب مفاتيح الأيقونات (اختياري، لكن سنبحث في كل رتبة يملكها العضو)
-            for (const roleId in roleIcons) {
-                if (memberRoleIds.includes(roleId)) {
-                    const icon = roleIcons[roleId].trim();
-                    return icon + " "; // إرجاع أول أيقونة مطابقة يملكها العضو
-                }
-            }
-            return "";
-        };
-
-        // --- معالجة رسائل الخاص ---
-        if (!message.guild) {
-            const ticket = db.openTickets[message.author.id];
-            
-            if (message.content.toLowerCase() === '-report') {
-                const options = Object.entries(categories).map(([id, data]) => ({
-                    label: data.name,
-                    value: id
-                }));
-
-                if (options.length === 0) {
-                    return message.channel.send(' لا توجد أقسام متاحة حالياً لفتح بلاغ.');
-                }
-
-                const selectMenu = new StringSelectMenuBuilder()
-                    .setCustomId('report_select')
-                    .setPlaceholder('اختر القسم المطلوب لفتح البلاغ')
-                    .addOptions(options);
-                const row = new ActionRowBuilder().addComponents(selectMenu);
-                return message.channel.send({ content: 'يرجى اختيار القسم المناسب لبلاغك:', components: [row] });
-            }
-
-            if (!ticket) return;
-
-            if (message.content.toLowerCase() === '-er') {
-                const staffId = ticket.claimedBy;
-                const ticketId = ticket.ticketId;
-                await message.channel.send(' تم إغلاق تذكرتك بنجاح.');
-                
-                const chan = await client.channels.fetch(ticket.channelId).catch(() => null);
-                if (chan) {
-                    const attachment = await transcript.createTranscript(chan, {
-                        limit: -1,
-                        fileName: `transcript-${ticketId}.html`,
-                        returnType: 'attachment',
-                        poweredBy: false
-                    });
-
-                    const logEmbed = new EmbedBuilder()
-                        .setColor(0xED4245)
-                        .setTitle('🔒 تم إغلاق تذكرة (عبر الخاص)')
-                        .addFields(
-                            { name: 'رقم التذكرة', value: `#${ticketId}`, inline: true },
-                            { name: 'صاحب التذكرة', value: `${message.author}`, inline: true }
-                        )
-                        .setTimestamp();
-                    
-                    await sendLog(logEmbed, [attachment]);
-                    await chan.delete().catch(() => {});
-                }
-
-                if (staffId) {
-                    const ratingMenu = new StringSelectMenuBuilder()
-                        .setCustomId('rating_select')
-                        .setPlaceholder('كيف كانت تجربتك؟')
-                        .addOptions([
-                            { label: 'ممتاز', value: `excellent_${staffId}_${ticketId}` },
-                            { label: 'جيد جدا', value: `verygood_${staffId}_${ticketId}` },
-                            { label: 'جيد', value: `good_${staffId}_${ticketId}` },
-                            { label: 'ليس جيد وليس سيئ', value: `neutral_${staffId}_${ticketId}` },
-                            { label: 'سيئ', value: `bad_${staffId}_${ticketId}` }
-                        ]);
-                    const row = new ActionRowBuilder().addComponents(ratingMenu);
-                    await message.author.send({ content: `لقد تم إغلاق التذكرة رقم "${ticketId}". يرجى تقييم الخدمة:`, components: [row] }).catch(() => {});
+        const safeErrorReply = async (inter, message) => {
+            try {
+                if (inter.deferred || inter.replied) {
+                    await inter.editReply({ content: message });
                 } else {
-                    await message.author.send({ content: `لقد تم إغلاق التذكرة رقم "${ticketId}".` }).catch(() => {});
+                    await inter.reply({ content: message, ephemeral: true });
                 }
-                
-                delete db.openTickets[message.author.id];
-                fs.writeFileSync(dbPath, JSON.stringify(db, null, 2));
-                return;
+            } catch (err) {
+                console.error('فشل إرسال رد الخطأ:', err.message);
             }
+        };
 
-            const chan = await client.channels.fetch(ticket.channelId).catch(() => null);
-            if (chan) {
-                const files = message.attachments.map(a => a.url);
-                await chan.send({ content: `### **${message.author.username}** : ${message.content || ''}`, files: files });
+        if (interaction.isChatInputCommand()) {
+            const command = client.commands.get(interaction.commandName);
+            if (!command) return;
+            try {
+                await command.execute(interaction);
+            } catch (error) {
+                console.error('خطأ في تنفيذ الأمر:', error);
+                await safeErrorReply(interaction, 'حدث خطأ أثناء تنفيذ الأمر!');
             }
-            return;
-        }
+        } else if (interaction.isButton()) {
+            const adminRoleIds = config.adminRoleIds || [];
+            const isAdmin = interaction.member.permissions.has(PermissionFlagsBits.Administrator) || 
+                            interaction.member.roles.cache.some(role => adminRoleIds.includes(role.id));
 
-        // --- معالجة الأوامر في السيرفر ---
-        const ownerId = Object.keys(db.openTickets).find(id => db.openTickets[id]?.channelId === message.channel.id);
-        
-        if (message.content.startsWith('-') && (adminRoleIds || []).some(roleId => message.member.roles.cache.has(roleId))) {
-            const [cmd, ...args] = message.content.slice(1).trim().split(/ +/);
-            const command = cmd.toLowerCase();
-            const isHighAdmin = highAdminRoleIds.some(roleId => message.member.roles.cache.has(roleId));
+            if (interaction.customId.startsWith('admin_')) {
+                if (!isAdmin) return interaction.reply({ content: '❌ ليس لديك صلاحية لاستخدام لوحة التحكم.', ephemeral: true });
 
-            if (command === 'sfb') {
-                if (message.channel.id !== statsChannelId) return;
-                const targetUser = message.mentions.users.first() || message.author;
-                const stats = db.ratings[targetUser.id] || { score: 0, acceptedTickets: 0, details: { excellent: 0, verygood: 0, good: 0, neutral: 0, bad: 0 } };
-                const embed = new EmbedBuilder()
-                    .setColor(0x5865F2)
-                    .setTitle(`إحصائيات التقييم - ${targetUser.tag}`)
-                    .setThumbnail(targetUser.displayAvatarURL())
-                    .addFields(
-                        { name: 'اسم العضو', value: `${targetUser}`, inline: true },
-                        { name: 'إجمالي التقييم', value: `${stats.score}`, inline: true },
-                        { name: 'إجمالي التذاكر المقبولة', value: `${stats.acceptedTickets}`, inline: true },
-                        { name: 'إحصائيات التقييمات:', value: `ممتاز: ${stats.details.excellent}\nجيد جدا: ${stats.details.verygood}\nجيد: ${stats.details.good}\nليس جيد وليس سيئ: ${stats.details.neutral}\nسيئ: ${stats.details.bad}` }
-                    ).setTimestamp();
-                return message.channel.send({ embeds: [embed] });
+                // --- إدارة الأقسام ---
+                if (interaction.customId === 'admin_categories_manage') {
+                    const embed = new EmbedBuilder()
+                        .setTitle('📂 إدارة الأقسام')
+                        .setDescription('اختر الإجراء المطلوب للأقسام:')
+                        .setColor(0x5865F2);
+
+                    const row1 = new ActionRowBuilder().addComponents(
+                        new ButtonBuilder().setCustomId('admin_categories_list').setLabel('عرض الأقسام').setEmoji('📋').setStyle(ButtonStyle.Secondary),
+                        new ButtonBuilder().setCustomId('admin_categories_add_modal').setLabel('إضافة قسم').setEmoji('➕').setStyle(ButtonStyle.Success),
+                        new ButtonBuilder().setCustomId('admin_categories_edit_modal').setLabel('تعديل قسم').setEmoji('✏️').setStyle(ButtonStyle.Primary)
+                    );
+                    const row2 = new ActionRowBuilder().addComponents(
+                        new ButtonBuilder().setCustomId('admin_categories_delete_modal').setLabel('حذف قسم').setEmoji('🗑️').setStyle(ButtonStyle.Danger),
+                        new ButtonBuilder().setCustomId('admin_categories_toggle_modal').setLabel('فتح/إغلاق قسم').setEmoji('🔒').setStyle(ButtonStyle.Secondary),
+                        new ButtonBuilder().setCustomId('admin_panel_back').setLabel('رجوع').setEmoji('⬅️').setStyle(ButtonStyle.Danger)
+                    );
+                    await interaction.update({ embeds: [embed], components: [row1, row2] });
+                } else if (interaction.customId === 'admin_categories_list') {
+                    const categoriesList = Object.entries(db.categories || {}).map(([id, data]) => {
+                        return `**${data.name}** (\`${id}\`): ${data.closed ? '🔴 مغلق' : '🟢 مفتوح'} | فئة: \`${data.categoryId || 'غير محددة'}\``;
+                    }).join('\n') || 'لا توجد أقسام مضافة.';
+
+                    const embed = new EmbedBuilder().setTitle('📋 قائمة الأقسام').setDescription(categoriesList).setColor(0x5865F2);
+                    const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('admin_categories_manage').setLabel('رجوع').setEmoji('⬅️').setStyle(ButtonStyle.Danger));
+                    await interaction.update({ embeds: [embed], components: [row] });
+                } else if (interaction.customId === 'admin_categories_add_modal') {
+                    const modal = new ModalBuilder().setCustomId('admin_modal_add_category').setTitle('إضافة قسم جديد');
+                    modal.addComponents(
+                        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('cat_id').setLabel("معرف القسم (ticket_support)").setStyle(TextInputStyle.Short).setRequired(true)),
+                        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('cat_name').setLabel("اسم القسم").setStyle(TextInputStyle.Short).setRequired(true)),
+                        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('cat_parent').setLabel("معرف فئة القنوات (Category ID)").setStyle(TextInputStyle.Short).setRequired(true))
+                    );
+                    await interaction.showModal(modal);
+                } else if (interaction.customId === 'admin_categories_edit_modal') {
+                    const modal = new ModalBuilder().setCustomId('admin_modal_edit_category').setTitle('تعديل بيانات قسم');
+                    modal.addComponents(
+                        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('cat_id').setLabel("المعرف الحالي للقسم").setStyle(TextInputStyle.Short).setRequired(true)),
+                        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('cat_name').setLabel("الاسم الجديد (اختياري)").setStyle(TextInputStyle.Short).setRequired(false)),
+                        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('cat_parent').setLabel("معرف الفئة الجديد (اختياري)").setStyle(TextInputStyle.Short).setRequired(false))
+                    );
+                    await interaction.showModal(modal);
+                } else if (interaction.customId === 'admin_categories_delete_modal') {
+                    const modal = new ModalBuilder().setCustomId('admin_modal_delete_category').setTitle('حذف قسم');
+                    modal.addComponents(new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('cat_id').setLabel("أدخل معرف القسم المراد حذفه").setStyle(TextInputStyle.Short).setRequired(true)));
+                    await interaction.showModal(modal);
+                } else if (interaction.customId === 'admin_categories_toggle_modal') {
+                    const modal = new ModalBuilder().setCustomId('admin_modal_toggle_category').setTitle('فتح أو إغلاق قسم');
+                    modal.addComponents(new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('cat_id').setLabel("أدخل معرف القسم").setStyle(TextInputStyle.Short).setRequired(true)));
+                    await interaction.showModal(modal);
+
+                // --- الإدارة العليا ---
+                } else if (interaction.customId === 'admin_high_admin_manage') {
+                    const embed = new EmbedBuilder()
+                        .setTitle('🛡️ إدارة الإدارة العليا')
+                        .setDescription('الرتب الحالية: ' + (config.highAdminRoleIds || []).map(id => `<@&${id}>`).join(', ') || 'لا يوجد')
+                        .setColor(0x2B2D31);
+                    const row = new ActionRowBuilder().addComponents(
+                        new ButtonBuilder().setCustomId('admin_high_admin_add_modal').setLabel('إضافة رتبة').setEmoji('➕').setStyle(ButtonStyle.Success),
+                        new ButtonBuilder().setCustomId('admin_high_admin_remove_modal').setLabel('إزالة رتبة').setEmoji('➖').setStyle(ButtonStyle.Danger),
+                        new ButtonBuilder().setCustomId('admin_panel_back').setLabel('رجوع').setEmoji('⬅️').setStyle(ButtonStyle.Danger)
+                    );
+                    await interaction.update({ embeds: [embed], components: [row] });
+                } else if (interaction.customId === 'admin_high_admin_add_modal') {
+                    const modal = new ModalBuilder().setCustomId('admin_modal_add_high_admin').setTitle('إضافة رتبة للإدارة العليا');
+                    modal.addComponents(new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('role_id').setLabel("أدخل معرف الرتبة (Role ID)").setStyle(TextInputStyle.Short).setRequired(true)));
+                    await interaction.showModal(modal);
+                } else if (interaction.customId === 'admin_high_admin_remove_modal') {
+                    const modal = new ModalBuilder().setCustomId('admin_modal_remove_high_admin').setTitle('إزالة رتبة من الإدارة العليا');
+                    modal.addComponents(new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('role_id').setLabel("أدخل معرف الرتبة (Role ID)").setStyle(TextInputStyle.Short).setRequired(true)));
+                    await interaction.showModal(modal);
+
+                // --- أيقونات الرتب ---
+                } else if (interaction.customId === 'admin_role_icons_manage') {
+                    const icons = config.roleIcons || {};
+                    let iconsList = "✨ **قائمة أيقونات الرتب:**\n";
+                    if (Object.keys(icons).length === 0) iconsList += "لا توجد أيقونات محددة.";
+                    else for (const [rid, icon] of Object.entries(icons)) iconsList += `<@&${rid}>: ${icon}\n`;
+
+                    const embed = new EmbedBuilder().setTitle('✨ إدارة أيقونات الرتب').setDescription(iconsList).setColor(0x57F287);
+                    const row = new ActionRowBuilder().addComponents(
+                        new ButtonBuilder().setCustomId('admin_role_icon_add_modal').setLabel('تعيين أيقونة').setEmoji('🏷️').setStyle(ButtonStyle.Success),
+                        new ButtonBuilder().setCustomId('admin_role_icon_remove_modal').setLabel('إزالة أيقونة').setEmoji('🚫').setStyle(ButtonStyle.Danger),
+                        new ButtonBuilder().setCustomId('admin_panel_back').setLabel('رجوع').setEmoji('⬅️').setStyle(ButtonStyle.Danger)
+                    );
+                    await interaction.update({ embeds: [embed], components: [row] });
+                } else if (interaction.customId === 'admin_role_icon_add_modal') {
+                    const modal = new ModalBuilder().setCustomId('admin_modal_add_role_icon').setTitle('تعيين أيقونة لرتبة');
+                    modal.addComponents(
+                        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('role_id').setLabel("معرف الرتبة (Role ID)").setStyle(TextInputStyle.Short).setRequired(true)),
+                        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('icon').setLabel("الأيقونة (Emoji)").setStyle(TextInputStyle.Short).setRequired(true))
+                    );
+                    await interaction.showModal(modal);
+                } else if (interaction.customId === 'admin_role_icon_remove_modal') {
+                    const modal = new ModalBuilder().setCustomId('admin_modal_remove_role_icon').setTitle('إزالة أيقونة رتبة');
+                    modal.addComponents(new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('role_id').setLabel("معرف الرتبة (Role ID)").setStyle(TextInputStyle.Short).setRequired(true)));
+                    await interaction.showModal(modal);
+
+                // --- القنوات والإحصائيات والرجوع ---
+                } else if (interaction.customId === 'admin_config_manage') {
+                    const embed = new EmbedBuilder().setTitle('⚙️ إعدادات القنوات').setDescription('الإعدادات الحالية:').addFields(
+                        { name: 'Ticket Category', value: config.ticketCategoryId ? `<#${config.ticketCategoryId}>` : 'غير محدد', inline: true },
+                        { name: 'Log Channel', value: config.logChannelId ? `<#${config.logChannelId}>` : 'غير محدد', inline: true },
+                        { name: 'Admin Channel', value: config.adminChannelId ? `<#${config.adminChannelId}>` : 'غير محدد', inline: true }
+                    ).setColor(0x2B2D31);
+                    const row = new ActionRowBuilder().addComponents(
+                        new ButtonBuilder().setCustomId('admin_config_edit_channels').setLabel('تعديل القنوات').setEmoji('📺').setStyle(ButtonStyle.Primary),
+                        new ButtonBuilder().setCustomId('admin_panel_back').setLabel('رجوع').setEmoji('⬅️').setStyle(ButtonStyle.Danger)
+                    );
+                    await interaction.update({ embeds: [embed], components: [row] });
+                } else if (interaction.customId === 'admin_panel_back' || interaction.customId === 'admin_refresh_panel') {
+                    const embed = new EmbedBuilder().setTitle('🛠️ لوحة تحكم الإدارة الشاملة').setDescription('مرحباً بك في مركز التحكم. يمكنك الآن إدارة كل شيء بضغطة زر:').setColor(0x2B2D31).setTimestamp();
+                    const row1 = new ActionRowBuilder().addComponents(
+                        new ButtonBuilder().setCustomId('admin_categories_manage').setLabel('إدارة الأقسام').setEmoji('📂').setStyle(ButtonStyle.Primary),
+                        new ButtonBuilder().setCustomId('admin_high_admin_manage').setLabel('الإدارة العليا').setEmoji('🛡️').setStyle(ButtonStyle.Secondary),
+                        new ButtonBuilder().setCustomId('admin_role_icons_manage').setLabel('أيقونات الرتب').setEmoji('✨').setStyle(ButtonStyle.Success)
+                    );
+                    const row2 = new ActionRowBuilder().addComponents(
+                        new ButtonBuilder().setCustomId('admin_config_manage').setLabel('إعدادات القنوات').setEmoji('⚙️').setStyle(ButtonStyle.Secondary),
+                        new ButtonBuilder().setCustomId('admin_stats_view').setLabel('الإحصائيات').setEmoji('📊').setStyle(ButtonStyle.Primary),
+                        new ButtonBuilder().setCustomId('admin_refresh_panel').setLabel('تحديث').setEmoji('🔄').setStyle(ButtonStyle.Secondary)
+                    );
+                    await interaction.update({ embeds: [embed], components: [row1, row2] });
+                } else if (interaction.customId === 'admin_stats_view') {
+                    const ratings = db.ratings || {};
+                    let statsText = "📊 **إحصائيات الموظفين:**\n";
+                    if (Object.keys(ratings).length === 0) statsText += "لا توجد بيانات تقييم حالياً.";
+                    else for (const [staffId, data] of Object.entries(ratings)) statsText += `\n<@${staffId}>: التذاكر: ${data.acceptedTickets || 0}, النقاط: ${data.score || 0}`;
+                    const embed = new EmbedBuilder().setTitle('📊 إحصائيات النظام').setDescription(statsText).setColor(0x57F287);
+                    const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('admin_panel_back').setLabel('رجوع').setEmoji('⬅️').setStyle(ButtonStyle.Danger));
+                    await interaction.update({ embeds: [embed], components: [row] });
+                } else if (interaction.customId === 'admin_config_edit_channels') {
+                    const modal = new ModalBuilder().setCustomId('admin_modal_edit_config').setTitle('تعديل قنوات النظام');
+                    modal.addComponents(
+                        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('log_id').setLabel("معرف قناة السجلات (Log)").setStyle(TextInputStyle.Short).setRequired(false)),
+                        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('admin_id').setLabel("معرف قناة الإدارة (Admin)").setStyle(TextInputStyle.Short).setRequired(false)),
+                        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('stats_id').setLabel("معرف قناة الإحصائيات (Stats)").setStyle(TextInputStyle.Short).setRequired(false))
+                    );
+                    await interaction.showModal(modal);
+                }
             }
+        } else if (interaction.isStringSelectMenu()) {
+            // ... (نفس كود فتح التذاكر ونقلها وتقييمها - يبقى كما هو)
+            try {
+                if (interaction.customId === 'ticket_select') {
+                    const selectedValue = interaction.values[0];
+                    const dept = categories[selectedValue];
+                    if (!dept) return interaction.reply({ content: ' هذا القسم لم يعد متاحاً.', ephemeral: true });
 
-            if (['block', 'unblock', 'restpoints'].includes(command)) {
-                if (message.channel.id !== adminChannelId) return;
-                if (!isHighAdmin) return;
-                const targetUser = message.mentions.users.first();
-                if (!targetUser) return message.channel.send('يرجى منشن العضو.');
-                if (command === 'restpoints') {
-                    const reason = args.slice(1).join(' ') || 'لا يوجد سبب';
-                    db.ratings[targetUser.id] = { score: 0, acceptedTickets: 0, details: { excellent: 0, verygood: 0, good: 0, neutral: 0, bad: 0 } };
-                    fs.writeFileSync(dbPath, JSON.stringify(db, null, 2));
-                    const logEmbed = new EmbedBuilder().setColor(0xED4245).setTitle('🔄 تصفير نقاط').addFields({ name: 'المشرف', value: `${message.author.tag}`, inline: true }, { name: 'العضو', value: `${targetUser.tag}`, inline: true }, { name: 'السبب', value: reason, inline: false }).setTimestamp();
-                    await sendLog(logEmbed);
-                    return message.channel.send(` تم تصفير نقاط ${targetUser} بنجاح.`);
-                }
-                if (command === 'block') {
-                    let durationStr = args[1];
-                    let reason = args.slice(2).join(' ') || 'لا يوجد سبب';
-                    let expires = 'permanent';
-                    if (durationStr && /^\d+[mhd w]$/.test(durationStr)) {
-                        const msTime = ms(durationStr);
-                        if (msTime) expires = Date.now() + msTime;
-                    } else if (durationStr) {
-                        reason = args.slice(1).join(' ') || 'لا يوجد سبب';
-                    }
-                    db.blocks[targetUser.id] = { expires, reason, by: message.author.id };
-                    fs.writeFileSync(dbPath, JSON.stringify(db, null, 2));
-                    const expiryMsg = expires === 'permanent' ? 'دائم' : durationStr;
-                    const logEmbed = new EmbedBuilder().setColor(0xED4245).setTitle(' حظر من التذاكر').addFields({ name: 'المشرف', value: `${message.author.tag}`, inline: true }, { name: 'المحظور', value: `${targetUser.tag}`, inline: true }, { name: 'المدة', value: expiryMsg, inline: true }, { name: 'السبب', value: reason, inline: false }).setTimestamp();
-                    await sendLog(logEmbed);
-                    return message.channel.send(` تم حظر ${targetUser} من نظام التذاكر بنجاح. المدة: ${expiryMsg}`);
-                }
-                if (command === 'unblock') {
-                    if (db.blocks[targetUser.id]) {
-                        delete db.blocks[targetUser.id];
-                        fs.writeFileSync(dbPath, JSON.stringify(db, null, 2));
-                        return message.channel.send(` تم فك حظر ${targetUser} بنجاح.`);
-                    } else return message.channel.send('هذا العضو غير محظور.');
-                }
-            }
-        }
-
-        if (!ownerId) return;
-        const ticket = db.openTickets[ownerId];
-        const user = await client.users.fetch(ownerId).catch(() => null);
-        const isHighAdmin = highAdminRoleIds.some(roleId => message.member.roles.cache.has(roleId));
-
-        // --- إلغاء الإغلاق التلقائي عند رد صاحب التذكرة ---
-        if (message.author.id === ownerId && ticketCloseTimers.has(message.channel.id)) {
-            clearTimeout(ticketCloseTimers.get(message.channel.id));
-            ticketCloseTimers.delete(message.channel.id);
-            
-            const cancelEmbed = new EmbedBuilder()
-                .setColor(0x57F287)
-                .setDescription('✅ تم إلغاء إغلاق التذكرة التلقائي بسبب رد صاحب التذكرة.');
-            await message.channel.send({ embeds: [cancelEmbed] });
-            if (user) await user.send('✅ تم إلغاء إغلاق تذكرتك التلقائي بنجاح.').catch(() => {});
-        }
-
-        if (!ticket.verified && (adminRoleIds || []).some(roleId => message.member.roles.cache.has(roleId))) {
-            if (message.content.trim() === ticket.captchaCode) {
-                ticket.verified = true;
-                ticket.claimedBy = message.author.id;
-                if (!db.ratings[message.author.id]) {
-                    db.ratings[message.author.id] = { score: 0, acceptedTickets: 0, details: { excellent: 0, verygood: 0, good: 0, neutral: 0, bad: 0 } };
-                }
-                db.ratings[message.author.id].acceptedTickets++;
-                fs.writeFileSync(dbPath, JSON.stringify(db, null, 2));
-                
-                const claimEmbed = new EmbedBuilder()
-                    .setColor(0x57F287)
-                    .setDescription(`✅ تم استلام التذكرة من قبل ${message.author}`);
-                await message.channel.send({ embeds: [claimEmbed] });
-                if (user) await user.send({ embeds: [new EmbedBuilder().setColor(0x57F287).setDescription(` تم استلام التذكرة الخاصة بك من قبل **${message.member.displayName}**`)] }).catch(() => {});
-                try { await message.delete(); } catch(e) {}
-                return;
-            }
-        }
-
-        if (message.content.startsWith('-') && (adminRoleIds || []).some(roleId => message.member.roles.cache.has(roleId))) {
-            const [cmd, ...args] = message.content.slice(1).trim().split(/ +/);
-            const command = cmd.toLowerCase();
-            
-            if (['a', 'fdr', 'dr', 'fr', 'r', 'cr', 'er', 'tra', 'name'].includes(command)) {
-                
-                if (command === 'er') {
-                    await message.channel.send({ embeds: [new EmbedBuilder().setColor(0xED4245).setDescription('🔒 يتم إغلاق التذكرة الآن...')] });
-                    const attachment = await transcript.createTranscript(message.channel, { limit: -1, fileName: `transcript-${ticket.ticketId}.html`, returnType: 'attachment', poweredBy: false });
-                    const logEmbed = new EmbedBuilder().setColor(0xED4245).setTitle('🔒 تم إغلاق تذكرة').addFields({ name: 'رقم التذكرة', value: `#${ticket.ticketId}`, inline: true }, { name: 'صاحب التذكرة', value: `<@${ownerId}>`, inline: true }, { name: 'أغلق بواسطة', value: `${message.author}`, inline: true }).setTimestamp();
-                    await sendLog(logEmbed, [attachment]);
-                    if (user) {
-                        const staffId = ticket.claimedBy;
-                        if (staffId) {
-                            const ratingMenu = new StringSelectMenuBuilder().setCustomId('rating_select').setPlaceholder('كيف كانت تجربتك؟').addOptions([{ label: 'ممتاز', value: `excellent_${staffId}_${ticket.ticketId}` }, { label: 'جيد جدا', value: `verygood_${staffId}_${ticket.ticketId}` }, { label: 'جيد', value: `good_${staffId}_${ticket.ticketId}` }, { label: 'ليس جيد وليس سيئ', value: `neutral_${staffId}_${ticket.ticketId}` }, { label: 'سيئ', value: `bad_${staffId}_${ticket.ticketId}` }]);
-                            const row = new ActionRowBuilder().addComponents(ratingMenu);
-                            await user.send({ content: `لقد تم إغلاق التذكرة رقم "${ticket.ticketId}". يرجى تقييم الخدمة:`, components: [row] }).catch(() => {});
-                        } else await user.send({ content: `لقد تم إغلاق التذكرة رقم "${ticket.ticketId}".` }).catch(() => {});
-                    }
-                    delete db.openTickets[ownerId];
-                    fs.writeFileSync(dbPath, JSON.stringify(db, null, 2));
-                    setTimeout(() => message.channel.delete().catch(() => {}), 2000);
-                    return;
-                }
-
-                if (!ticket.verified && command !== 'fdr') {
-                    return message.channel.send(' يرجى استلام التذكرة أولاً عبر إدخال كود الكابتشا.').then(m => setTimeout(() => m.delete(), 3000));
-                }
-
-                if (command === 'a') {
-                    if (!isHighAdmin) return message.channel.send(' ليس لديك صلاحية لاستخدام هذا الأمر.').then(m => setTimeout(() => m.delete(), 3000));
-                    const txt = args.join(' ');
-                    if (!txt) return;
-                    const content = `### $**High Management** : ${txt}`;
-                    await message.channel.send({ content });
-                    if (user) await user.send({ content }).catch(() => {});
-                    try { await message.delete(); } catch(e) {}
-                    return;
-                }
-
-                if (command === 'fr') {
-                    if (!isHighAdmin) return message.channel.send(' ليس لديك صلاحية لاستخدام هذا الأمر.').then(m => setTimeout(() => m.delete(), 3000));
-                    await message.channel.send({ embeds: [new EmbedBuilder().setColor(0xED4245).setDescription('🔒 إغلاق التذكرة إجبارياً...')] });
-                    const attachment = await transcript.createTranscript(message.channel, { limit: -1, fileName: `transcript-${ticket.ticketId}.html`, returnType: 'attachment', poweredBy: false });
-                    const logEmbed = new EmbedBuilder().setColor(0xED4245).setTitle('🔒 تم إغلاق تذكرة (إجباري)').addFields({ name: 'رقم التذكرة', value: `#${ticket.ticketId}`, inline: true }, { name: 'صاحب التذكرة', value: `<@${ownerId}>`, inline: true }, { name: 'أغلق بواسطة', value: `${message.author}`, inline: true }).setTimestamp();
-                    await sendLog(logEmbed, [attachment]);
-                    if (user) {
-                        const staffId = ticket.claimedBy;
-                        if (staffId) {
-                            const ratingMenu = new StringSelectMenuBuilder().setCustomId('rating_select').setPlaceholder('كيف كانت تجربتك؟').addOptions([{ label: 'ممتاز', value: `excellent_${staffId}_${ticket.ticketId}` }, { label: 'جيد جدا', value: `verygood_${staffId}_${ticket.ticketId}` }, { label: 'جيد', value: `good_${staffId}_${ticket.ticketId}` }, { label: 'ليس جيد وليس سيئ', value: `neutral_${staffId}_${ticket.ticketId}` }, { label: 'سيئ', value: `bad_${staffId}_${ticket.ticketId}` }]);
-                            const row = new ActionRowBuilder().addComponents(ratingMenu);
-                            await user.send({ content: `لقد تم إغلاق التذكرة رقم "${ticket.ticketId}". يرجى تقييم الخدمة:`, components: [row] }).catch(() => {});
-                        } else await user.send({ content: `لقد تم إغلاق التذكرة رقم "${ticket.ticketId}".` }).catch(() => {});
-                    }
-                    delete db.openTickets[ownerId];
-                    fs.writeFileSync(dbPath, JSON.stringify(db, null, 2));
-                    setTimeout(() => message.channel.delete().catch(() => {}), 2000);
-                    return;
-                }
-
-                if (command === 'fdr' || command === 'dr') {
-                    if (command === 'fdr' && !isHighAdmin) return message.channel.send(' ليس لديك صلاحية لاستخدام هذا الأمر.').then(m => setTimeout(() => m.delete(), 3000));
-                    if (command === 'dr' && (!ticket.verified || ticket.claimedBy !== message.author.id)) return message.channel.send(' لا يمكنك ترك تذكرة لم تستلمها بعد أو لست مستلمها.').then(m => setTimeout(() => m.delete(), 3000));
-                    const captcha = generateCaptcha();
-                    const attachment = new AttachmentBuilder(captcha.buffer, { name: 'new_captcha.png' });
-                    if (ticket.claimedBy && db.ratings[ticket.claimedBy]) {
-                        db.ratings[ticket.claimedBy].acceptedTickets = Math.max(0, db.ratings[ticket.claimedBy].acceptedTickets - 1);
-                    }
-                    ticket.verified = false;
-                    ticket.claimedBy = null;
-                    ticket.captchaCode = captcha.code;
-                    fs.writeFileSync(dbPath, JSON.stringify(db, null, 2));
-                    const leaveEmbed = new EmbedBuilder().setColor(0xFEE75C).setTitle(' تم ترك استلام التذكرة').setDescription(command === 'fdr' ? `قام ${message.author} بإجبار ترك استلام التذكرة.` : `قام المستلم ${message.author} بترك استلام التذكرة.`).setImage('attachment://new_captcha.png').setTimestamp();
-                    await message.channel.send({ embeds: [leaveEmbed], files: [attachment] });
-                    const logEmbed = new EmbedBuilder().setColor(0xFEE75C).setTitle(' ترك استلام تذكرة').addFields({ name: 'العضو', value: `${message.author.tag}`, inline: true }, { name: 'النوع', value: command === 'fdr' ? 'إجباري' : 'يدوي', inline: true }, { name: 'رقم التذكرة', value: `#${ticket.ticketId}`, inline: true }).setTimestamp();
-                    await sendLog(logEmbed);
-                    return;
-                }
-
-                if (command === 'r') {
-                    const txt = args.join(' ');
-                    if (!txt && message.attachments.size === 0) return;
-                    const iconString = getMemberIcon(message.member);
-                    const files = message.attachments.map(a => a.url);
-                    await message.channel.send({ content: `### ${iconString}**${message.member.displayName}** : ${txt}`, files: files });
-                    if (user) await user.send({ content: `### ${iconString}**${message.member.displayName}** : ${txt}`, files: files }).catch(() => {});
-                    try { await message.delete(); } catch(e) {}
-                    return;
-                }
-
-                if (command === 'cr') {
-                    const time = args[0];
-                    const closeTicket = async () => {
-                        const chan = await client.channels.fetch(message.channel.id).catch(() => null);
-                        if (chan) {
-                            const attachment = await transcript.createTranscript(chan, { limit: -1, fileName: `transcript-${ticket.ticketId}.html`, returnType: 'attachment', poweredBy: false });
-                            const logEmbed = new EmbedBuilder().setColor(0xED4245).setTitle('🔒 تم إغلاق تذكرة (تلقائي/مؤقت)').addFields({ name: 'رقم التذكرة', value: `#${ticket.ticketId}`, inline: true }, { name: 'صاحب التذكرة', value: `<@${ownerId}>`, inline: true }, { name: 'أغلق بواسطة', value: `${message.author}`, inline: true }).setTimestamp();
-                            await sendLog(logEmbed, [attachment]);
-                            await chan.delete().catch(() => {});
+                    const blockData = db.blocks[interaction.user.id];
+                    if (blockData) {
+                        if (blockData.expires === 'permanent' || blockData.expires > Date.now()) {
+                            const expiryMsg = blockData.expires === 'permanent' ? 'دائم' : `<t:${Math.floor(blockData.expires / 1000)}:R>`;
+                            return interaction.reply({ content: ` أنت محظور من استخدام نظام التذاكر\n**المدة:** ${expiryMsg}\n**السبب:** ${blockData.reason}`, ephemeral: true });
+                        } else {
+                            delete db.blocks[interaction.user.id];
+                            fs.writeFileSync(dbPath, JSON.stringify(db, null, 2));
                         }
-                        const staffId = ticket.claimedBy;
-                        if (user) {
-                            if (staffId) {
-                                const ratingMenu = new StringSelectMenuBuilder().setCustomId('rating_select').setPlaceholder('كيف كانت تجربتك؟').addOptions([{ label: 'ممتاز', value: `excellent_${staffId}_${ticket.ticketId}` }, { label: 'جيد جدا', value: `verygood_${staffId}_${ticket.ticketId}` }, { label: 'جيد', value: `good_${staffId}_${ticket.ticketId}` }, { label: 'ليس جيد وليس سيئ', value: `neutral_${staffId}_${ticket.ticketId}` }, { label: 'سيئ', value: `bad_${staffId}_${ticket.ticketId}` }]);
-                                const row = new ActionRowBuilder().addComponents(ratingMenu);
-                                await user.send({ content: `لقد تم إغلاق التذكرة رقم "${ticket.ticketId}". يرجى تقييم الخدمة:`, components: [row] }).catch(() => {});
-                            } else await user.send({ content: `لقد تم إغلاق التذكرة رقم "${ticket.ticketId}".` }).catch(() => {});
-                        }
-                        delete db.openTickets[ownerId];
-                        fs.writeFileSync(dbPath, JSON.stringify(db, null, 2));
-                    };
-                    if (!time) {
-                        await message.channel.send('سيتم اغلاق التذكرة خلال 5 ثواني');
-                        setTimeout(closeTicket, 5000);
-                    } else {
-                        const msTime = ms(time); if (isNaN(msTime)) return message.channel.send(' وقت غير صالح.');
-                        await message.channel.send(`سيتم اغلاق التذكرة تلقائي بعد ${time}`);
-                        
-                        // تنبيه المستخدم في الخاص
-                        if (user) {
-                            await user.send(`تم تحويل تذكرتك لوضع الاهمال في حال عدم الرد سيتم اغلاق تذكرتك بعد (${time})`).catch(() => {});
-                        }
-                        
-                        const timer = setTimeout(closeTicket, msTime);
-                        ticketCloseTimers.set(message.channel.id, timer);
                     }
-                    return;
-                }
 
-                if (command === 'tra') {
-                    const options = Object.entries(categories).map(([id, data]) => ({ label: data.name, value: id }));
-                    if (options.length === 0) return message.channel.send(' لا توجد أقسام متاحة للنقل إليها.');
-                    const selectMenu = new StringSelectMenuBuilder().setCustomId('transfer_select').setPlaceholder('اختر القسم الجديد للنقل إليه').addOptions(options);
-                    const row = new ActionRowBuilder().addComponents(selectMenu);
-                    await message.channel.send({ embeds: [new EmbedBuilder().setColor(0x5865F2).setTitle(' نقل التذكرة').setDescription('يرجى اختيار القسم الجديد:')], components: [row] });
-                    return;
-                }
+                    if (dept.closed) return interaction.reply({ content: ` عذراً، قسم **${dept.name}** مغلق حالياً.`, ephemeral: true });
+                    if (db.openTickets[interaction.user.id]) return interaction.reply({ content: 'لديك تذكرة مفتوحة بالفعل!', ephemeral: true });
 
-                if (command === 'name') {
-                    const newName = args.join('-');
-                    if (!newName) return message.channel.send(' يرجى كتابة الاسم الجديد بعد الأمر. مثال: `-name ticket-new`');
-                    
+                    const modal = new ModalBuilder().setCustomId(`ticket_modal_${selectedValue}`).setTitle(`فتح تذكرة - ${dept.name}`);
+                    modal.addComponents(new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('problem_description').setLabel("يرجى شرح مشكلتك بالتفاصيل").setStyle(TextInputStyle.Paragraph).setRequired(true)));
+                    await interaction.showModal(modal);
+                } else if (interaction.customId === 'transfer_select') {
+                    const selectedValue = interaction.values[0];
+                    const dept = categories[selectedValue];
+                    if (!dept) return interaction.reply({ content: ' هذا القسم غير متاح.', ephemeral: true });
+                    const ownerId = Object.keys(db.openTickets).find(id => db.openTickets[id].channelId === interaction.channel.id);
+                    if (!ownerId) return;
+                    await interaction.deferUpdate();
                     try {
-                        const oldName = message.channel.name;
-                        await message.channel.setName(newName);
-                        await message.channel.send('تم تغير اسم التذكرة الى ' + newName);
-                        
-                        const logEmbed = new EmbedBuilder()
-                            .setColor(0x5865F2)
-                            .setTitle('📝 تغيير اسم تذكرة')
-                            .addFields(
-                                { name: 'المشرف', value: `${message.author.tag}`, inline: true },
-                                { name: 'الاسم القديم', value: `\`${oldName}\``, inline: true },
-                                { name: 'الاسم الجديد', value: `\`${newName}\``, inline: true },
-                                { name: 'رقم التذكرة', value: `#${ticket.ticketId}`, inline: true }
-                            )
-                            .setTimestamp();
-                        await sendLog(logEmbed);
-                    } catch (error) {
-                        console.error('Error renaming channel:', error);
-                        await message.channel.send('❌ حدث خطأ أثناء محاولة تغيير اسم القناة. تأكد من أن البوت لديه الصلاحيات الكافية.');
-                    }
-                    return;
+                        const newCaptcha = generateCaptcha();
+                        const attachment = new AttachmentBuilder(newCaptcha.buffer, { name: 'new_captcha.png' });
+                        if (dept.categoryId) await interaction.channel.setParent(dept.categoryId, { lockPermissions: false });
+                        db.openTickets[ownerId].department = dept.name;
+                        db.openTickets[ownerId].verified = false;
+                        db.openTickets[ownerId].captchaCode = newCaptcha.code;
+                        db.openTickets[ownerId].claimedBy = null;
+                        fs.writeFileSync(dbPath, JSON.stringify(db, null, 2));
+                        await interaction.editReply({ embeds: [new EmbedBuilder().setColor(0x3498DB).setDescription(` تم نقل التذكرة إلى قسم: **${dept.name}**`)], components: [], files: [attachment] });
+                        const adminRoleIds = config.adminRoleIds || [];
+                        await interaction.channel.send({ content: adminRoleIds.map(id => `<@&${id}>`).join(' '), embeds: [new EmbedBuilder().setColor(0x3498DB).setImage('attachment://new_captcha.png')], files: [attachment] });
+                    } catch (err) { console.error(err); }
+                } else if (interaction.customId === 'rating_select') {
+                    const [ratingValue, staffId, ticketId] = interaction.values[0].split('_');
+                    if (!db.ratings[staffId]) db.ratings[staffId] = { score: 0, acceptedTickets: 0, details: { excellent: 0, verygood: 0, good: 0, neutral: 0, bad: 0 } };
+                    db.ratings[staffId].details[ratingValue]++;
+                    const scores = { 'excellent': 5, 'verygood': 4, 'good': 3, 'neutral': 2, 'bad': 1 };
+                    db.ratings[staffId].score += scores[ratingValue];
+                    fs.writeFileSync(dbPath, JSON.stringify(db, null, 2));
+                    await interaction.update({ content: ` شكراً لك على تقييمك!`, components: [] });
                 }
+            } catch (e) { console.error(e); }
+
+        } else if (interaction.isModalSubmit()) {
+            // --- معالجة نماذج الإدارة ---
+            if (interaction.customId === 'admin_modal_add_category') {
+                const id = interaction.fields.getTextInputValue('cat_id');
+                const name = interaction.fields.getTextInputValue('cat_name');
+                const categoryId = interaction.fields.getTextInputValue('cat_parent');
+                db.categories[id] = { name, categoryId, closed: false };
+                fs.writeFileSync(dbPath, JSON.stringify(db, null, 2));
+                return interaction.reply({ content: `✅ تم إضافة القسم **${name}** بنجاح.`, ephemeral: true });
+            } else if (interaction.customId === 'admin_modal_edit_category') {
+                const id = interaction.fields.getTextInputValue('cat_id');
+                if (!db.categories[id]) return interaction.reply({ content: '❌ القسم غير موجود.', ephemeral: true });
+                const name = interaction.fields.getTextInputValue('cat_name');
+                const catParent = interaction.fields.getTextInputValue('cat_parent');
+                if (name) db.categories[id].name = name;
+                if (catParent) db.categories[id].categoryId = catParent;
+                fs.writeFileSync(dbPath, JSON.stringify(db, null, 2));
+                return interaction.reply({ content: `✅ تم تحديث القسم بنجاح.`, ephemeral: true });
+            } else if (interaction.customId === 'admin_modal_delete_category') {
+                const id = interaction.fields.getTextInputValue('cat_id');
+                if (!db.categories[id]) return interaction.reply({ content: '❌ القسم غير موجود.', ephemeral: true });
+                delete db.categories[id];
+                fs.writeFileSync(dbPath, JSON.stringify(db, null, 2));
+                return interaction.reply({ content: `✅ تم حذف القسم بنجاح.`, ephemeral: true });
+            } else if (interaction.customId === 'admin_modal_toggle_category') {
+                const id = interaction.fields.getTextInputValue('cat_id');
+                if (!db.categories[id]) return interaction.reply({ content: '❌ القسم غير موجود.', ephemeral: true });
+                db.categories[id].closed = !db.categories[id].closed;
+                fs.writeFileSync(dbPath, JSON.stringify(db, null, 2));
+                return interaction.reply({ content: `✅ تم ${db.categories[id].closed ? 'إغلاق' : 'فتح'} القسم بنجاح.`, ephemeral: true });
+            } else if (interaction.customId === 'admin_modal_add_high_admin') {
+                const rid = interaction.fields.getTextInputValue('role_id');
+                if (!config.highAdminRoleIds) config.highAdminRoleIds = [];
+                if (!config.highAdminRoleIds.includes(rid)) {
+                    config.highAdminRoleIds.push(rid);
+                    fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+                    return interaction.reply({ content: '✅ تم إضافة الرتبة للإدارة العليا.', ephemeral: true });
+                }
+                return interaction.reply({ content: 'الرتبة موجودة بالفعل.', ephemeral: true });
+            } else if (interaction.customId === 'admin_modal_remove_high_admin') {
+                const rid = interaction.fields.getTextInputValue('role_id');
+                config.highAdminRoleIds = (config.highAdminRoleIds || []).filter(id => id !== rid);
+                fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+                return interaction.reply({ content: '✅ تم إزالة الرتبة من الإدارة العليا.', ephemeral: true });
+            } else if (interaction.customId === 'admin_modal_add_role_icon') {
+                const rid = interaction.fields.getTextInputValue('role_id');
+                const icon = interaction.fields.getTextInputValue('icon');
+                if (!config.roleIcons) config.roleIcons = {};
+                config.roleIcons[rid] = icon;
+                fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+                return interaction.reply({ content: '✅ تم تعيين الأيقونة بنجاح.', ephemeral: true });
+            } else if (interaction.customId === 'admin_modal_remove_role_icon') {
+                const rid = interaction.fields.getTextInputValue('role_id');
+                if (config.roleIcons && config.roleIcons[rid]) {
+                    delete config.roleIcons[rid];
+                    fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+                    return interaction.reply({ content: '✅ تم إزالة الأيقونة بنجاح.', ephemeral: true });
+                }
+                return interaction.reply({ content: 'لا توجد أيقونة لهذه الرتبة.', ephemeral: true });
+            } else if (interaction.customId === 'admin_modal_edit_config') {
+                const logId = interaction.fields.getTextInputValue('log_id');
+                const adminId = interaction.fields.getTextInputValue('admin_id');
+                const statsId = interaction.fields.getTextInputValue('stats_id');
+                if (logId) config.logChannelId = logId;
+                if (adminId) config.adminChannelId = adminId;
+                if (statsId) config.statsChannelId = statsId;
+                fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+                return interaction.reply({ content: `✅ تم تحديث القنوات بنجاح.`, ephemeral: true });
+            }
+
+            // --- فتح التذاكر (Modal Submit) ---
+            if (interaction.customId.startsWith('ticket_modal_')) {
+                const deptKey = interaction.customId.replace('ticket_modal_', '');
+                const dept = categories[deptKey];
+                if (!dept) return interaction.reply({ content: ' حدث خطأ، القسم غير موجود.', ephemeral: true });
+                const problemDescription = interaction.fields.getTextInputValue('problem_description');
+                try {
+                    if (!interaction.replied && !interaction.deferred) await interaction.deferReply({ ephemeral: true });
+                    const ticketId = ++db.ticketCounter;
+                    const captcha = generateCaptcha();
+                    const attachment = new AttachmentBuilder(captcha.buffer, { name: 'captcha.png' });
+                    const guild = interaction.guild || client.guilds.cache.get(config.guildId);
+                    const parentId = dept.categoryId || config.ticketCategoryId;
+                    const adminRoleIds = config.adminRoleIds || [];
+                    const channel = await guild.channels.create({
+                        name: `ticket-${ticketId}`,
+                        type: ChannelType.GuildText,
+                        parent: parentId,
+                        permissionOverwrites: [
+                            { id: guild.id, deny: [PermissionFlagsBits.ViewChannel] },
+                            ...adminRoleIds.map(roleId => ({ id: roleId, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageChannels] })),
+                            { id: client.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }
+                        ]
+                    });
+                    db.openTickets[interaction.user.id] = { channelId: channel.id, department: dept.name, verified: false, captchaCode: captcha.code, createdAt: Date.now() };
+                    fs.writeFileSync(dbPath, JSON.stringify(db, null, 2));
+                    const ticketEmbed = new EmbedBuilder().setColor(0x5865F2).setTitle(`تذكرة جديدة - ${dept.name}`).setDescription(`مرحباً ${interaction.user}، يرجى كتابة رمز التحقق لتأكيد تذكرتك.`).addFields({ name: 'وصف المشكلة', value: problemDescription }).setImage('attachment://captcha.png').setFooter({ text: `تذكرة رقم: ${ticketId}` });
+                    await channel.send({ content: `${interaction.user} | ` + adminRoleIds.map(id => `<@&${id}>`).join(' '), embeds: [ticketEmbed], files: [attachment] });
+                    await interaction.editReply({ content: `✅ تم فتح تذكرتك بنجاح: ${channel}` });
+                } catch (err) { console.error(err); await safeErrorReply(interaction, 'حدث خطأ أثناء فتح التذكرة.'); }
             }
         }
-    },
+    }
 };
