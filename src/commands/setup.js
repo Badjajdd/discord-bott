@@ -43,7 +43,7 @@ module.exports = {
                     "*Finally, choose the appropriate section.*\n\n" +
                     "[Privacy Policy](https://discord.com/privacy ) | [Community Guidelines](https://discord.com/guidelines ) | [Terms of Service](https://discord.com/terms )"
                 )
-                .setImage('https://cdn.discordapp.com/attachments/1453070859974476037/1463296743679721503/bPb1hH3.png?ex=697150ca&is=696fff4a&hm=0a03e01622a9124f41e61948998960ffbd68b4d6ffea070e6889f262f8a2d207&');
+                .setImage('https://media.discordapp.net/attachments/1463300854756020306/1475216582203543572/966f08337391471d.png?ex=699cae01&is=699b5c81&hm=092cb46d4c041018ac66d697320817aed53c7b5c2ee329b208da0c1303878829&=&format=webp&quality=lossless&width=1867&height=659');
 
             const options = Object.entries(categories).map(([id, data]) => ({
                 label: data.name,
