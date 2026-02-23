@@ -12,7 +12,6 @@ module.exports = {
     async execute(message, client) {
         if (message.author.bot) return;
 
-        // إعادة تحميل الإعدادات لضمان قراءة التغييرات الديناميكية
         const configPath = path.join(__dirname, '..', '..', 'config.json');
         let config;
         try {
@@ -40,18 +39,13 @@ module.exports = {
             if (logChannel) await logChannel.send({ embeds: [embed], files: files });
         };
 
-        // دالة جلب الأيقونة - نسخة مبسطة ومضمونة
         const getMemberIcon = (member) => {
             if (!roleIcons) return "";
-            
-            // جلب مصفوفة من معرفات رتب العضو
             const memberRoleIds = Array.from(member.roles.cache.keys());
-            
-            // ترتيب مفاتيح الأيقونات (اختياري، لكن سنبحث في كل رتبة يملكها العضو)
             for (const roleId in roleIcons) {
                 if (memberRoleIds.includes(roleId)) {
                     const icon = roleIcons[roleId].trim();
-                    return icon + " "; // إرجاع أول أيقونة مطابقة يملكها العضو
+                    return icon + " ";
                 }
             }
             return "";
@@ -68,7 +62,7 @@ module.exports = {
                 }));
 
                 if (options.length === 0) {
-                    return message.channel.send(' لا توجد أقسام متاحة حالياً لفتح بلاغ.');
+                    return message.channel.send('لا توجد أقسام متاحة حالياً لفتح بلاغ.');
                 }
 
                 const selectMenu = new StringSelectMenuBuilder()
@@ -84,7 +78,7 @@ module.exports = {
             if (message.content.toLowerCase() === '-er') {
                 const staffId = ticket.claimedBy;
                 const ticketId = ticket.ticketId;
-                await message.channel.send(' تم إغلاق تذكرتك بنجاح.');
+                await message.channel.send('تم إغلاق تذكرتك بنجاح.');
                 
                 const chan = await client.channels.fetch(ticket.channelId).catch(() => null);
                 if (chan) {
@@ -97,7 +91,7 @@ module.exports = {
 
                     const logEmbed = new EmbedBuilder()
                         .setColor(0xED4245)
-                        .setTitle('🔒 تم إغلاق تذكرة (عبر الخاص)')
+                        .setTitle('تم إغلاق تذكرة (عبر الخاص)')
                         .addFields(
                             { name: 'رقم التذكرة', value: `#${ticketId}`, inline: true },
                             { name: 'صاحب التذكرة', value: `${message.author}`, inline: true }
@@ -163,41 +157,65 @@ module.exports = {
                 return message.channel.send({ embeds: [embed] });
             }
 
+            // ======= أوامر الإدارة العليا (block / unblock / restpoints) =======
             if (['block', 'unblock', 'restpoints'].includes(command)) {
                 if (message.channel.id !== adminChannelId) return;
                 if (!isHighAdmin) return;
-                const targetUser = message.mentions.users.first();
-                if (!targetUser) return message.channel.send('يرجى منشن العضو.');
+
+                // جلب المستخدم المستهدف: منشن أو ID مباشر
+                let targetUser = message.mentions.users.first();
+                if (!targetUser && args[0] && /^\d{17,20}$/.test(args[0])) {
+                    targetUser = await client.users.fetch(args[0]).catch(() => null);
+                }
+                if (!targetUser) return message.channel.send('يرجى منشن العضو أو كتابة الـ ID الخاص به.');
+
                 if (command === 'restpoints') {
                     const reason = args.slice(1).join(' ') || 'لا يوجد سبب';
                     db.ratings[targetUser.id] = { score: 0, acceptedTickets: 0, details: { excellent: 0, verygood: 0, good: 0, neutral: 0, bad: 0 } };
                     fs.writeFileSync(dbPath, JSON.stringify(db, null, 2));
-                    const logEmbed = new EmbedBuilder().setColor(0xED4245).setTitle('🔄 تصفير نقاط').addFields({ name: 'المشرف', value: `${message.author.tag}`, inline: true }, { name: 'العضو', value: `${targetUser.tag}`, inline: true }, { name: 'السبب', value: reason, inline: false }).setTimestamp();
+                    const logEmbed = new EmbedBuilder().setColor(0xED4245).setTitle('تصفير نقاط').addFields({ name: 'المشرف', value: `${message.author.tag}`, inline: true }, { name: 'العضو', value: `${targetUser.tag}`, inline: true }, { name: 'السبب', value: reason, inline: false }).setTimestamp();
                     await sendLog(logEmbed);
-                    return message.channel.send(` تم تصفير نقاط ${targetUser} بنجاح.`);
+                    return message.channel.send(`تم تصفير نقاط ${targetUser} بنجاح.`);
                 }
+
                 if (command === 'block') {
-                    let durationStr = args[1];
-                    let reason = args.slice(2).join(' ') || 'لا يوجد سبب';
+                    // تحديد ما إذا كانت args[0] هو ID أو منشن
+                    // إذا args[0] هو ID أو منشن فالمدة ستكون في args[1]، وإلا في args[0]
+                    let durationArgIndex = message.mentions.users.first() ? 1 : 2; // بعد تخطي معرف المستخدم
+                    // تبسيط: targetUser تم جلبه بالفعل، نحسب بقية الـ args بعد المعرف
+                    const remainingArgs = message.mentions.users.first()
+                        ? args.slice(1)   // منشن: args[0] = mention, args[1] = duration
+                        : args.slice(1);  // ID:   args[0] = id,      args[1] = duration
+
+                    let durationStr = remainingArgs[0];
+                    let reason = remainingArgs.slice(1).join(' ') || 'لا يوجد سبب';
                     let expires = 'permanent';
-                    if (durationStr && /^\d+[mhd w]$/.test(durationStr)) {
+
+                    if (durationStr && /^\d+[mhdw]$/.test(durationStr)) {
                         const msTime = ms(durationStr);
                         if (msTime) expires = Date.now() + msTime;
                     } else if (durationStr) {
-                        reason = args.slice(1).join(' ') || 'لا يوجد سبب';
+                        reason = remainingArgs.join(' ') || 'لا يوجد سبب';
                     }
+
                     db.blocks[targetUser.id] = { expires, reason, by: message.author.id };
                     fs.writeFileSync(dbPath, JSON.stringify(db, null, 2));
                     const expiryMsg = expires === 'permanent' ? 'دائم' : durationStr;
-                    const logEmbed = new EmbedBuilder().setColor(0xED4245).setTitle(' حظر من التذاكر').addFields({ name: 'المشرف', value: `${message.author.tag}`, inline: true }, { name: 'المحظور', value: `${targetUser.tag}`, inline: true }, { name: 'المدة', value: expiryMsg, inline: true }, { name: 'السبب', value: reason, inline: false }).setTimestamp();
+                    const logEmbed = new EmbedBuilder().setColor(0xED4245).setTitle('حظر من التذاكر').addFields(
+                        { name: 'المشرف', value: `${message.author.tag}`, inline: true },
+                        { name: 'المحظور', value: `${targetUser.tag}`, inline: true },
+                        { name: 'المدة', value: expiryMsg, inline: true },
+                        { name: 'السبب', value: reason, inline: false }
+                    ).setTimestamp();
                     await sendLog(logEmbed);
-                    return message.channel.send(` تم حظر ${targetUser} من نظام التذاكر بنجاح. المدة: ${expiryMsg}`);
+                    return message.channel.send(`تم حظر ${targetUser} من نظام التذاكر بنجاح. المدة: ${expiryMsg}`);
                 }
+
                 if (command === 'unblock') {
                     if (db.blocks[targetUser.id]) {
                         delete db.blocks[targetUser.id];
                         fs.writeFileSync(dbPath, JSON.stringify(db, null, 2));
-                        return message.channel.send(` تم فك حظر ${targetUser} بنجاح.`);
+                        return message.channel.send(`تم فك حظر ${targetUser} بنجاح.`);
                     } else return message.channel.send('هذا العضو غير محظور.');
                 }
             }
@@ -215,9 +233,9 @@ module.exports = {
             
             const cancelEmbed = new EmbedBuilder()
                 .setColor(0x57F287)
-                .setDescription('✅ تم إلغاء إغلاق التذكرة التلقائي بسبب رد صاحب التذكرة.');
+                .setDescription('تم إلغاء إغلاق التذكرة التلقائي بسبب رد صاحب التذكرة.');
             await message.channel.send({ embeds: [cancelEmbed] });
-            if (user) await user.send('✅ تم إلغاء إغلاق تذكرتك التلقائي بنجاح.').catch(() => {});
+            if (user) await user.send('تم إلغاء إغلاق تذكرتك التلقائي بنجاح.').catch(() => {});
         }
 
         if (!ticket.verified && (adminRoleIds || []).some(roleId => message.member.roles.cache.has(roleId))) {
@@ -232,9 +250,9 @@ module.exports = {
                 
                 const claimEmbed = new EmbedBuilder()
                     .setColor(0x57F287)
-                    .setDescription(`✅ تم استلام التذكرة من قبل ${message.author}`);
+                    .setDescription(`تم استلام التذكرة من قبل ${message.author}`);
                 await message.channel.send({ embeds: [claimEmbed] });
-                if (user) await user.send({ embeds: [new EmbedBuilder().setColor(0x57F287).setDescription(` تم استلام التذكرة الخاصة بك من قبل **${message.member.displayName}**`)] }).catch(() => {});
+                if (user) await user.send({ embeds: [new EmbedBuilder().setColor(0x57F287).setDescription(`تم استلام التذكرة الخاصة بك من قبل **${message.member.displayName}**`)] }).catch(() => {});
                 try { await message.delete(); } catch(e) {}
                 return;
             }
@@ -243,13 +261,28 @@ module.exports = {
         if (message.content.startsWith('-') && (adminRoleIds || []).some(roleId => message.member.roles.cache.has(roleId))) {
             const [cmd, ...args] = message.content.slice(1).trim().split(/ +/);
             const command = cmd.toLowerCase();
-            
+
             if (['a', 'fdr', 'dr', 'fr', 'r', 'cr', 'er', 'tra', 'name'].includes(command)) {
-                
+
+                // ======= التحقق من الصلاحية: فقط المستلم يستطيع استخدام الأوامر =======
+                // استثناءات: -a (highAdmin فقط), -fdr (highAdmin فقط), -fr (highAdmin فقط), -er (الجميع)
+                const claimedCommands = ['r', 'cr', 'dr', 'tra', 'name'];
+                const isClaimedCommand = claimedCommands.includes(command);
+
+                if (isClaimedCommand) {
+                    // يجب أن يكون المستلم الحالي هو من يستخدم الأمر
+                    if (!ticket.verified || ticket.claimedBy !== message.author.id) {
+                        return message.channel.send({ content: 'انت غير مستلم لهذه التذكرة' })
+                            .then(m => setTimeout(() => m.delete().catch(() => {}), 4000));
+                    }
+                }
+                // -er: يستطيع أي مشرف إغلاق التذكرة (المستلم + الإدارة العليا)
+                // -a, -fr, -fdr: محمية بـ isHighAdmin داخلها
+
                 if (command === 'er') {
-                    await message.channel.send({ embeds: [new EmbedBuilder().setColor(0xED4245).setDescription('🔒 يتم إغلاق التذكرة الآن...')] });
+                    await message.channel.send({ embeds: [new EmbedBuilder().setColor(0xED4245).setDescription('يتم إغلاق التذكرة الآن...')] });
                     const attachment = await transcript.createTranscript(message.channel, { limit: -1, fileName: `transcript-${ticket.ticketId}.html`, returnType: 'attachment', poweredBy: false });
-                    const logEmbed = new EmbedBuilder().setColor(0xED4245).setTitle('🔒 تم إغلاق تذكرة').addFields({ name: 'رقم التذكرة', value: `#${ticket.ticketId}`, inline: true }, { name: 'صاحب التذكرة', value: `<@${ownerId}>`, inline: true }, { name: 'أغلق بواسطة', value: `${message.author}`, inline: true }).setTimestamp();
+                    const logEmbed = new EmbedBuilder().setColor(0xED4245).setTitle('تم إغلاق تذكرة').addFields({ name: 'رقم التذكرة', value: `#${ticket.ticketId}`, inline: true }, { name: 'صاحب التذكرة', value: `<@${ownerId}>`, inline: true }, { name: 'أغلق بواسطة', value: `${message.author}`, inline: true }).setTimestamp();
                     await sendLog(logEmbed, [attachment]);
                     if (user) {
                         const staffId = ticket.claimedBy;
@@ -266,11 +299,11 @@ module.exports = {
                 }
 
                 if (!ticket.verified && command !== 'fdr') {
-                    return message.channel.send(' يرجى استلام التذكرة أولاً عبر إدخال كود الكابتشا.').then(m => setTimeout(() => m.delete(), 3000));
+                    return message.channel.send('يرجى استلام التذكرة أولاً عبر إدخال كود الكابتشا.').then(m => setTimeout(() => m.delete(), 3000));
                 }
 
                 if (command === 'a') {
-                    if (!isHighAdmin) return message.channel.send(' ليس لديك صلاحية لاستخدام هذا الأمر.').then(m => setTimeout(() => m.delete(), 3000));
+                    if (!isHighAdmin) return message.channel.send('ليس لديك صلاحية لاستخدام هذا الأمر.').then(m => setTimeout(() => m.delete(), 3000));
                     const txt = args.join(' ');
                     if (!txt) return;
                     const iconString = getMemberIcon(message.member);
@@ -282,10 +315,10 @@ module.exports = {
                 }
 
                 if (command === 'fr') {
-                    if (!isHighAdmin) return message.channel.send(' ليس لديك صلاحية لاستخدام هذا الأمر.').then(m => setTimeout(() => m.delete(), 3000));
-                    await message.channel.send({ embeds: [new EmbedBuilder().setColor(0xED4245).setDescription('🔒 إغلاق التذكرة إجبارياً...')] });
+                    if (!isHighAdmin) return message.channel.send('ليس لديك صلاحية لاستخدام هذا الأمر.').then(m => setTimeout(() => m.delete(), 3000));
+                    await message.channel.send({ embeds: [new EmbedBuilder().setColor(0xED4245).setDescription('إغلاق التذكرة إجبارياً...')] });
                     const attachment = await transcript.createTranscript(message.channel, { limit: -1, fileName: `transcript-${ticket.ticketId}.html`, returnType: 'attachment', poweredBy: false });
-                    const logEmbed = new EmbedBuilder().setColor(0xED4245).setTitle('🔒 تم إغلاق تذكرة (إجباري)').addFields({ name: 'رقم التذكرة', value: `#${ticket.ticketId}`, inline: true }, { name: 'صاحب التذكرة', value: `<@${ownerId}>`, inline: true }, { name: 'أغلق بواسطة', value: `${message.author}`, inline: true }).setTimestamp();
+                    const logEmbed = new EmbedBuilder().setColor(0xED4245).setTitle('تم إغلاق تذكرة (إجباري)').addFields({ name: 'رقم التذكرة', value: `#${ticket.ticketId}`, inline: true }, { name: 'صاحب التذكرة', value: `<@${ownerId}>`, inline: true }, { name: 'أغلق بواسطة', value: `${message.author}`, inline: true }).setTimestamp();
                     await sendLog(logEmbed, [attachment]);
                     if (user) {
                         const staffId = ticket.claimedBy;
@@ -302,8 +335,8 @@ module.exports = {
                 }
 
                 if (command === 'fdr' || command === 'dr') {
-                    if (command === 'fdr' && !isHighAdmin) return message.channel.send(' ليس لديك صلاحية لاستخدام هذا الأمر.').then(m => setTimeout(() => m.delete(), 3000));
-                    if (command === 'dr' && (!ticket.verified || ticket.claimedBy !== message.author.id)) return message.channel.send(' لا يمكنك ترك تذكرة لم تستلمها بعد أو لست مستلمها.').then(m => setTimeout(() => m.delete(), 3000));
+                    if (command === 'fdr' && !isHighAdmin) return message.channel.send('ليس لديك صلاحية لاستخدام هذا الأمر.').then(m => setTimeout(() => m.delete(), 3000));
+                    if (command === 'dr' && (!ticket.verified || ticket.claimedBy !== message.author.id)) return message.channel.send('لا يمكنك ترك تذكرة لم تستلمها بعد أو لست مستلمها.').then(m => setTimeout(() => m.delete(), 3000));
                     const captcha = generateCaptcha();
                     const attachment = new AttachmentBuilder(captcha.buffer, { name: 'new_captcha.png' });
                     if (ticket.claimedBy && db.ratings[ticket.claimedBy]) {
@@ -313,9 +346,9 @@ module.exports = {
                     ticket.claimedBy = null;
                     ticket.captchaCode = captcha.code;
                     fs.writeFileSync(dbPath, JSON.stringify(db, null, 2));
-                    const leaveEmbed = new EmbedBuilder().setColor(0xFEE75C).setTitle(' تم ترك استلام التذكرة').setDescription(command === 'fdr' ? `قام ${message.author} بإجبار ترك استلام التذكرة.` : `قام المستلم ${message.author} بترك استلام التذكرة.`).setImage('attachment://new_captcha.png').setTimestamp();
+                    const leaveEmbed = new EmbedBuilder().setColor(0xFEE75C).setTitle('تم ترك استلام التذكرة').setDescription(command === 'fdr' ? `قام ${message.author} بإجبار ترك استلام التذكرة.` : `قام المستلم ${message.author} بترك استلام التذكرة.`).setImage('attachment://new_captcha.png').setTimestamp();
                     await message.channel.send({ embeds: [leaveEmbed], files: [attachment] });
-                    const logEmbed = new EmbedBuilder().setColor(0xFEE75C).setTitle(' ترك استلام تذكرة').addFields({ name: 'العضو', value: `${message.author.tag}`, inline: true }, { name: 'النوع', value: command === 'fdr' ? 'إجباري' : 'يدوي', inline: true }, { name: 'رقم التذكرة', value: `#${ticket.ticketId}`, inline: true }).setTimestamp();
+                    const logEmbed = new EmbedBuilder().setColor(0xFEE75C).setTitle('ترك استلام تذكرة').addFields({ name: 'العضو', value: `${message.author.tag}`, inline: true }, { name: 'النوع', value: command === 'fdr' ? 'إجباري' : 'يدوي', inline: true }, { name: 'رقم التذكرة', value: `#${ticket.ticketId}`, inline: true }).setTimestamp();
                     await sendLog(logEmbed);
                     return;
                 }
@@ -337,7 +370,7 @@ module.exports = {
                         const chan = await client.channels.fetch(message.channel.id).catch(() => null);
                         if (chan) {
                             const attachment = await transcript.createTranscript(chan, { limit: -1, fileName: `transcript-${ticket.ticketId}.html`, returnType: 'attachment', poweredBy: false });
-                            const logEmbed = new EmbedBuilder().setColor(0xED4245).setTitle('🔒 تم إغلاق تذكرة (تلقائي/مؤقت)').addFields({ name: 'رقم التذكرة', value: `#${ticket.ticketId}`, inline: true }, { name: 'صاحب التذكرة', value: `<@${ownerId}>`, inline: true }, { name: 'أغلق بواسطة', value: `${message.author}`, inline: true }).setTimestamp();
+                            const logEmbed = new EmbedBuilder().setColor(0xED4245).setTitle('تم إغلاق تذكرة (تلقائي/مؤقت)').addFields({ name: 'رقم التذكرة', value: `#${ticket.ticketId}`, inline: true }, { name: 'صاحب التذكرة', value: `<@${ownerId}>`, inline: true }, { name: 'أغلق بواسطة', value: `${message.author}`, inline: true }).setTimestamp();
                             await sendLog(logEmbed, [attachment]);
                             await chan.delete().catch(() => {});
                         }
@@ -356,14 +389,11 @@ module.exports = {
                         await message.channel.send('سيتم اغلاق التذكرة خلال 5 ثواني');
                         setTimeout(closeTicket, 5000);
                     } else {
-                        const msTime = ms(time); if (isNaN(msTime)) return message.channel.send(' وقت غير صالح.');
+                        const msTime = ms(time); if (isNaN(msTime)) return message.channel.send('وقت غير صالح.');
                         await message.channel.send(`سيتم اغلاق التذكرة تلقائي بعد ${time}`);
-                        
-                        // تنبيه المستخدم في الخاص
                         if (user) {
                             await user.send(`تم تحويل تذكرتك لوضع الاهمال في حال عدم الرد سيتم اغلاق تذكرتك بعد (${time})`).catch(() => {});
                         }
-                        
                         const timer = setTimeout(closeTicket, msTime);
                         ticketCloseTimers.set(message.channel.id, timer);
                     }
@@ -372,25 +402,23 @@ module.exports = {
 
                 if (command === 'tra') {
                     const options = Object.entries(categories).map(([id, data]) => ({ label: data.name, value: id }));
-                    if (options.length === 0) return message.channel.send(' لا توجد أقسام متاحة للنقل إليها.');
+                    if (options.length === 0) return message.channel.send('لا توجد أقسام متاحة للنقل إليها.');
                     const selectMenu = new StringSelectMenuBuilder().setCustomId('transfer_select').setPlaceholder('اختر القسم الجديد للنقل إليه').addOptions(options);
                     const row = new ActionRowBuilder().addComponents(selectMenu);
-                    await message.channel.send({ embeds: [new EmbedBuilder().setColor(0x5865F2).setTitle(' نقل التذكرة').setDescription('يرجى اختيار القسم الجديد:')], components: [row] });
+                    await message.channel.send({ embeds: [new EmbedBuilder().setColor(0x5865F2).setTitle('نقل التذكرة').setDescription('يرجى اختيار القسم الجديد:')], components: [row] });
                     return;
                 }
 
                 if (command === 'name') {
                     const newName = args.join('-');
-                    if (!newName) return message.channel.send(' يرجى كتابة الاسم الجديد بعد الأمر. مثال: `-name ticket-new`');
-                    
+                    if (!newName) return message.channel.send('يرجى كتابة الاسم الجديد بعد الأمر. مثال: `-name ticket-new`');
                     try {
                         const oldName = message.channel.name;
                         await message.channel.setName(newName);
                         await message.channel.send('تم تغير اسم التذكرة الى ' + newName);
-                        
                         const logEmbed = new EmbedBuilder()
                             .setColor(0x5865F2)
-                            .setTitle('📝 تغيير اسم تذكرة')
+                            .setTitle('تغيير اسم تذكرة')
                             .addFields(
                                 { name: 'المشرف', value: `${message.author.tag}`, inline: true },
                                 { name: 'الاسم القديم', value: `\`${oldName}\``, inline: true },
@@ -401,7 +429,7 @@ module.exports = {
                         await sendLog(logEmbed);
                     } catch (error) {
                         console.error('Error renaming channel:', error);
-                        await message.channel.send('❌ حدث خطأ أثناء محاولة تغيير اسم القناة. تأكد من أن البوت لديه الصلاحيات الكافية.');
+                        await message.channel.send('حدث خطأ أثناء محاولة تغيير اسم القناة. تأكد من أن البوت لديه الصلاحيات الكافية.');
                     }
                     return;
                 }
