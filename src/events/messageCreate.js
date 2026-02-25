@@ -127,7 +127,20 @@ module.exports = {
             const chan = await client.channels.fetch(ticket.channelId).catch(() => null);
             if (chan) {
                 const files = message.attachments.map(a => a.url);
-                await chan.send({ content: `### **${message.author.username}** : ${message.content || ''}`, files: files });
+                // صاحب التذكرة ليس لديه أيقونة رتبة (عادي)
+                await chan.send({ content: `**${message.author.username}** : ${message.content || ''}`, files: files });
+
+                // الغاء الاغلاق التلقائي عند رد صاحب التذكرة عبر الخاص
+                if (ticketCloseTimers.has(chan.id)) {
+                    clearTimeout(ticketCloseTimers.get(chan.id));
+                    ticketCloseTimers.delete(chan.id);
+
+                    const cancelEmbed = new EmbedBuilder()
+                        .setColor(0x57F287)
+                        .setDescription('تم إلغاء إغلاق التذكرة التلقائي بسبب رد صاحب التذكرة.');
+                    await chan.send({ embeds: [cancelEmbed] });
+                    await message.author.send('تم إلغاء إغلاق تذكرتك التلقائي بنجاح. يمكنك الاستمرار في التواصل.').catch(() => {});
+                }
             }
             return;
         }
@@ -158,9 +171,45 @@ module.exports = {
             }
 
             // ======= أوامر الإدارة العليا (block / unblock / restpoints) =======
-            if (['block', 'unblock', 'restpoints'].includes(command)) {
+            if (['block', 'unblock', 'restpoints', 'addrole', 'removerole'].includes(command)) {
                 if (message.channel.id !== adminChannelId) return;
                 if (!isHighAdmin) return;
+
+                // إضافة رتبة أدمن: -addrole @role [admin|highadmin]
+                if (command === 'addrole') {
+                    const role = message.mentions.roles.first();
+                    if (!role) return message.channel.send('يرجى منشن الرتبة المراد إضافتها.');
+                    const type = args[1]?.toLowerCase();
+                    const configPath2 = path.join(__dirname, '..', '..', 'config.json');
+                    const cfg = JSON.parse(fs.readFileSync(configPath2, 'utf8'));
+                    if (type === 'highadmin' || type === 'high') {
+                        if (!cfg.highAdminRoleIds.includes(role.id)) cfg.highAdminRoleIds.push(role.id);
+                        fs.writeFileSync(configPath2, JSON.stringify(cfg, null, 2));
+                        return message.channel.send(`✅ تمت إضافة ${role} كرتبة **High Admin**.`);
+                    } else {
+                        if (!cfg.adminRoleIds.includes(role.id)) cfg.adminRoleIds.push(role.id);
+                        fs.writeFileSync(configPath2, JSON.stringify(cfg, null, 2));
+                        return message.channel.send(`✅ تمت إضافة ${role} كرتبة **Admin**.`);
+                    }
+                }
+
+                // إزالة رتبة أدمن: -removerole @role [admin|highadmin]
+                if (command === 'removerole') {
+                    const role = message.mentions.roles.first();
+                    if (!role) return message.channel.send('يرجى منشن الرتبة المراد إزالتها.');
+                    const type = args[1]?.toLowerCase();
+                    const configPath2 = path.join(__dirname, '..', '..', 'config.json');
+                    const cfg = JSON.parse(fs.readFileSync(configPath2, 'utf8'));
+                    if (type === 'highadmin' || type === 'high') {
+                        cfg.highAdminRoleIds = cfg.highAdminRoleIds.filter(id => id !== role.id);
+                        fs.writeFileSync(configPath2, JSON.stringify(cfg, null, 2));
+                        return message.channel.send(`✅ تمت إزالة ${role} من رتب **High Admin**.`);
+                    } else {
+                        cfg.adminRoleIds = cfg.adminRoleIds.filter(id => id !== role.id);
+                        fs.writeFileSync(configPath2, JSON.stringify(cfg, null, 2));
+                        return message.channel.send(`✅ تمت إزالة ${role} من رتب **Admin**.`);
+                    }
+                }
 
                 // جلب المستخدم المستهدف: منشن أو ID مباشر
                 let targetUser = message.mentions.users.first();
@@ -226,17 +275,8 @@ module.exports = {
         const user = await client.users.fetch(ownerId).catch(() => null);
         const isHighAdmin = highAdminRoleIds.some(roleId => message.member.roles.cache.has(roleId));
 
-        // --- إلغاء الإغلاق التلقائي عند رد صاحب التذكرة ---
-        if (message.author.id === ownerId && ticketCloseTimers.has(message.channel.id)) {
-            clearTimeout(ticketCloseTimers.get(message.channel.id));
-            ticketCloseTimers.delete(message.channel.id);
-            
-            const cancelEmbed = new EmbedBuilder()
-                .setColor(0x57F287)
-                .setDescription('تم إلغاء إغلاق التذكرة التلقائي بسبب رد صاحب التذكرة.');
-            await message.channel.send({ embeds: [cancelEmbed] });
-            if (user) await user.send('تم إلغاء إغلاق تذكرتك التلقائي بنجاح.').catch(() => {});
-        }
+        // ملاحظة: إلغاء الإغلاق التلقائي يتم الآن في قسم الخاص أعلاه
+        // لأن صاحب التذكرة يتواصل فقط عبر الخاص وليس عبر الروم
 
         if (!ticket.verified && (adminRoleIds || []).some(roleId => message.member.roles.cache.has(roleId))) {
             if (message.content.trim() === ticket.captchaCode) {
@@ -306,11 +346,11 @@ module.exports = {
                     if (!isHighAdmin) return message.channel.send('ليس لديك صلاحية لاستخدام هذا الأمر.').then(m => setTimeout(() => m.delete(), 3000));
                     const txt = args.join(' ');
                     if (!txt) return;
-                    const iconString = getMemberIcon(message.member);
-                    const content = `### ${iconString}**High Management** : ${txt}`;
+                    // لا توجد أيقونة هنا عمداً لإخفاء هوية الرتبة
+                    const content = `**High Management** : ${txt}`;
                     await message.channel.send({ content });
                     if (user) await user.send({ content }).catch(() => {});
-                    try { await message.delete(); } catch(e) {}
+                    // لا نحذف رسالة الأدمن
                     return;
                 }
 
@@ -358,9 +398,11 @@ module.exports = {
                     if (!txt && message.attachments.size === 0) return;
                     const iconString = getMemberIcon(message.member);
                     const files = message.attachments.map(a => a.url);
-                    await message.channel.send({ content: `### ${iconString}**${message.member.displayName}** : ${txt}`, files: files });
-                    if (user) await user.send({ content: `### ${iconString}**${message.member.displayName}** : ${txt}`, files: files }).catch(() => {});
-                    try { await message.delete(); } catch(e) {}
+                    // نستخدم Bold بدلاً من ### لتجنب heading، ولا نحذف رسالة الأدمن
+                    const formattedContent = `${iconString}**${message.member.displayName}** : ${txt}`;
+                    await message.channel.send({ content: formattedContent, files: files });
+                    if (user) await user.send({ content: formattedContent, files: files }).catch(() => {});
+                    // لا نحذف رسالة الأدمن
                     return;
                 }
 
