@@ -42,10 +42,14 @@ module.exports = {
             .setDescription('تعيين أيقونة لرتبة معينة')
             .addRoleOption(opt => opt.setName('role').setDescription('الرتبة').setRequired(true))
             .addStringOption(opt => opt.setName('icon').setDescription('الأيقونة (Emoji)').setRequired(true)))
-        .addSubcommand(sub => sub // الأمر الفرعي الجديد المطلوب
+        .addSubcommand(sub => sub
             .setName('remove_role_icon')
             .setDescription('إزالة أيقونة من رتبة معينة')
-            .addRoleOption(opt => opt.setName('role').setDescription('الرتبة التي تريد إزالة أيقونتها').setRequired(true))),
+            .addRoleOption(opt => opt.setName('role').setDescription('الرتبة التي تريد إزالة أيقونتها').setRequired(true)))
+        .addSubcommand(sub => sub
+            .setName('set_owner_icon')
+            .setDescription('تعيين أيقونة لصاحب التذكرة')
+            .addStringOption(opt => opt.setName('icon').setDescription('الأيقونة (Emoji) — اتركه فارغاً لإزالة الأيقونة').setRequired(false))),
 
     async execute(interaction) {
         const configPath = path.join(__dirname, '..', '..', 'config.json');
@@ -137,6 +141,18 @@ module.exports = {
                 return interaction.reply({ content: `✅ تم إزالة الأيقونة من الرتبة ${role}.`, ephemeral: true });
             }
             return interaction.reply({ content: `لا توجد أيقونة معينة لهذه الرتبة.`, ephemeral: true });
+        }
+
+        if (subcommand === 'set_owner_icon') {
+            const icon = interaction.options.getString('icon');
+            if (!icon) {
+                delete config.ticketOwnerIcon;
+                fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+                return interaction.reply({ content: '✅ تم إزالة أيقونة صاحب التذكرة.', ephemeral: true });
+            }
+            config.ticketOwnerIcon = icon;
+            fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+            return interaction.reply({ content: `✅ تم تعيين أيقونة صاحب التذكرة: ${icon}`, ephemeral: true });
         }
     }
 };
