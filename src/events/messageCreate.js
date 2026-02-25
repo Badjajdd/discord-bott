@@ -400,7 +400,7 @@ module.exports = {
                     const iconString = getMemberIcon(message.member);
                     const files = message.attachments.map(a => a.url);
                     // نستخدم Bold بدلاً من ### لتجنب heading، ولا نحذف رسالة الأدمن
-                    const formattedContent = `${iconString}**${message.member.displayName}** : ${txt}`;
+                    const formattedContent = `### ${iconString}**${message.member.displayName}** : ${txt}`;
                     await message.channel.send({ content: formattedContent, files: files });
                     if (user) await user.send({ content: formattedContent, files: files }).catch(() => {});
                     // لا نحذف رسالة الأدمن
