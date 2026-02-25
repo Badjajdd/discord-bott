@@ -348,7 +348,7 @@ module.exports = {
                     const txt = args.join(' ');
                     if (!txt) return;
                     // لا توجد أيقونة هنا عمداً لإخفاء هوية الرتبة
-                    const content = `**High Management** : ${txt}`;
+                    const content = `### **High Management** : ${txt}`;
                     await message.channel.send({ content });
                     if (user) await user.send({ content }).catch(() => {});
                     // لا نحذف رسالة الأدمن
