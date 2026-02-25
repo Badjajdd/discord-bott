@@ -128,7 +128,8 @@ module.exports = {
             if (chan) {
                 const files = message.attachments.map(a => a.url);
                 // صاحب التذكرة ليس لديه أيقونة رتبة (عادي)
-                await chan.send({ content: `**${message.author.username}** : ${message.content || ''}`, files: files });
+                const ownerIcon = config.ticketOwnerIcon ? config.ticketOwnerIcon + ' ' : '';
+                await chan.send({ content: `${ownerIcon}**${message.author.username}** : ${message.content || ''}`, files: files });
 
                 // الغاء الاغلاق التلقائي عند رد صاحب التذكرة عبر الخاص
                 if (ticketCloseTimers.has(chan.id)) {
